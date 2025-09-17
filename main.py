@@ -74,6 +74,7 @@ while True:
             try:
                 logger.info(12345)
                 orders = exchange.fetch_open_orders(sym)
+                logger.info(orders)
                 for o in orders:
                     logger.info(f"Open order data: {o}")
                     otype = (o.get("type") or "").lower()
