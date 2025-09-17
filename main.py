@@ -60,7 +60,7 @@ while True:
         snapshot = {}
 
         for p in positions or []:
-            logger.debug(f"Position data: {p}")
+            logger.info(f"Position data: {p}")
             contracts = safe_float(p.get("contracts"))
             if contracts <= 0:
                 continue
