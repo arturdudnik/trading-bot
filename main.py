@@ -49,54 +49,94 @@ def almost_equal(a, b, tol=1e-8):
         return str(a) == str(b)
 
 # --- Fetch TP/SL via MEXC swap raw endpoints (plan/stop orders) ---
-def fetch_tp_sl_raw(symbol: str):
+def fetch_tp_sl(symbol: str):
     """
-    Returns (tp, sl) floats or None if not present.
-    Uses:
-      contractPrivateGetPlanorderListOrders
-      contractPrivateGetStoporderListOrders
+    Try all places TP/SL may appear on MEXC swap:
+      1) open orders (stopLossPrice/takeProfitPrice attached)
+      2) stoporder list (combined TP/SL per position)
+      3) planorder list (standalone triggers)
+    Returns (tp, sl) as floats or None.
     """
+    def safe_float(v):
+        try: return float(v)
+        except: return None
+
     tp, sl = None, None
+    market = exchange.market(symbol)
+    contract_sym = market.get("id", symbol)  # e.g. BTC_USDT
 
-    def parse_items(items):
-        nonlocal tp, sl
-        for it in items or []:
-            info = it or {}
-            # Common fields seen on MEXC:
-            # 'orderType': 'TAKE_PROFIT_MARKET' / 'STOP_LOSS_MARKET' / 'TAKE_PROFIT' / 'STOP_LOSS' etc.
-            ot = (info.get("orderType") or info.get("type") or "").upper()
-            # price fields may vary: triggerPrice / stopPrice / executePrice
-            price = safe_float(info.get("triggerPrice")) \
-                    or safe_float(info.get("stopPrice")) \
-                    or safe_float(info.get("price")) \
-                    or safe_float(info.get("executePrice"))
-            if price is None:
+    # --- (1) Open orders with attached TP/SL ---
+    try:
+        # NOTE: this is the *futures* endpoint (not spot)
+        # GET /api/v1/private/order/list/open_orders/{symbol}
+        # It returns stopLossPrice and takeProfitPrice per order.
+        res = exchange.contractPrivateGetOrderListOpenOrdersSymbol({
+            "symbol": contract_sym,
+            "page_num": 1,
+            "page_size": 100,
+        })
+        items = res.get("data", []) if isinstance(res, dict) else res
+        for it in items:
+            tpp = safe_float(it.get("takeProfitPrice"))
+            slp = safe_float(it.get("stopLossPrice"))
+            if tpp is not None and tp is None:
+                tp = tpp
+            if slp is not None and sl is None:
+                sl = slp
+            if tp is not None and sl is not None:
+                return tp, sl
+    except Exception as e:
+        logger.debug(f"open_orders fetch failed for {symbol}: {e}")
+
+    # --- (2) Stop-Limit list (TP/SL attached to position) ---
+    try:
+        # GET /api/v1/private/stoporder/list/orders
+        res = exchange.contractPrivateGetStoporderListOrders({
+            "symbol": contract_sym,
+            "is_finished": 0,    # only active
+            "page_num": 1,
+            "page_size": 100,
+        })
+        items = res.get("data", []) if isinstance(res, dict) else res
+        for it in items:
+            # These entries can contain BOTH prices in one row
+            tpp = safe_float(it.get("takeProfitPrice"))
+            slp = safe_float(it.get("stopLossPrice"))
+            if tpp is not None and tp is None:
+                tp = tpp
+            if slp is not None and sl is None:
+                sl = slp
+        if tp is not None or sl is not None:
+            return tp, sl
+    except Exception as e:
+        logger.debug(f"stoporder list fetch failed for {symbol}: {e}")
+
+    # --- (3) Trigger/plan list (standalone TP or SL) ---
+    try:
+        # GET /api/v1/private/planorder/list/orders
+        res = exchange.contractPrivateGetPlanorderListOrders({
+            "symbol": contract_sym,
+            "states": "1",       # 1 = untriggered
+            "page_num": 1,
+            "page_size": 100,
+        })
+        items = res.get("data", []) if isinstance(res, dict) else res
+        for it in items:
+            order_type = str(it.get("orderType", "")).upper()
+            trig_price = safe_float(it.get("triggerPrice"))
+            if trig_price is None:
                 continue
-            if "TAKE_PROFIT" in ot and tp is None:
-                tp = price
-            elif "STOP_LOSS" in ot and sl is None:
-                sl = price
-
-    try:
-        # “Plan orders”
-        # Some installs require {'symbol': 'BTC_USDT'} with underscore; ccxt normally maps 'BTC/USDT'
-        market = exchange.market(symbol)
-        contract_sym = market.get("id", symbol)  # usually BTC_USDT for swaps
-        res1 = exchange.contractPrivateGetPlanorderListOrders({"symbol": contract_sym})
-        parse_items(res1.get("data") if isinstance(res1, dict) else res1)
+            # Heuristic: MEXC labels include TAKE_PROFIT / STOP_LOSS in orderType
+            if "TAKE_PROFIT" in order_type and tp is None:
+                tp = trig_price
+            elif "STOP_LOSS" in order_type and sl is None:
+                sl = trig_price
+        return tp, sl
     except Exception as e:
-        logger.debug(f"planorder.list for {symbol} failed: {e}")
-
-    try:
-        # Legacy/alt stop orders list
-        market = exchange.market(symbol)
-        contract_sym = market.get("id", symbol)
-        res2 = exchange.contractPrivateGetStoporderListOrders({"symbol": contract_sym})
-        parse_items(res2.get("data") if isinstance(res2, dict) else res2)
-    except Exception as e:
-        logger.debug(f"stoporder.list for {symbol} failed: {e}")
+        logger.debug(f"planorder list fetch failed for {symbol}: {e}")
 
     return tp, sl
+
 
 # ---------- STATE ----------
 # {symbol: {"side":..., "entry":..., "tp":..., "sl":...}}
@@ -126,7 +166,7 @@ while True:
             # Then query raw plan/stop lists (most reliable on MEXC swaps)
             tp, sl = tp_pos, sl_pos
             if tp is None or sl is None:
-                t2, s2 = fetch_tp_sl_raw(sym)
+                tp, sl = fetch_tp_sl(sym)
                 tp = tp if tp is not None else t2
                 sl = sl if sl is not None else s2
 
