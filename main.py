@@ -74,13 +74,14 @@ while True:
             try:
                 orders = exchange.fetch_open_orders(sym)
                 for o in orders:
+                    logger.info(f"Open order data: {o}")
                     otype = (o.get("type") or "").lower()
                     if "take_profit" in otype:
                         tp = o.get("stopPrice") or o.get("price")
                     elif "stop_loss" in otype:
                         sl = o.get("stopPrice") or o.get("price")
             except Exception as e:
-                logger.warning(f"Could not fetch TP/SL for {sym}: {e}")
+                logger.info(f"Could not fetch TP/SL for {sym}: {e}")
 
             current = {"side": side, "entry": entry, "tp": tp, "sl": sl}
             prev = last_positions.get(sym)
