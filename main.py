@@ -34,14 +34,14 @@ exchange.load_markets()
 
 http = requests.Session()
 
-# def send_tg(msg: str) -> None:
-#     """Send Telegram message"""
-#     url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
-#     try:
-#         r = http.post(url, timeout=10, data={"chat_id": CHAT_ID, "text": msg})
-#         r.raise_for_status()
-#     except Exception as e:
-#         logger.error(f"Telegram send error: {e}")
+def send_tg(msg: str) -> None:
+    """Send Telegram message"""
+    url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
+    try:
+        r = http.post(url, timeout=10, data={"chat_id": CHAT_ID, "text": msg})
+        r.raise_for_status()
+    except Exception as e:
+        logger.error(f"Telegram send error: {e}")
 
 def safe_float(v, default=0.0):
     try:
@@ -60,6 +60,7 @@ while True:
         snapshot = {}
 
         for p in positions or []:
+            logger.debug(f"Position data: {p}")
             contracts = safe_float(p.get("contracts"))
             if contracts <= 0:
                 continue
@@ -91,7 +92,7 @@ while True:
                     msg += f"\nTP: {tp}"
                 if sl:
                     msg += f"\nSL: {sl}"
-                #send_tg(msg)
+                send_tg(msg)
                 logger.info(f"New position detected: {msg}")
 
             # --- existing position updated ---
@@ -102,7 +103,7 @@ while True:
                         msg += f"\nTP: {tp}"
                     if sl:
                         msg += f"\nSL: {sl}"
-                    #send_tg(msg)
+                    send_tg(msg)
                     logger.info(f"Position updated: {msg}")
 
             snapshot[sym] = current
@@ -110,7 +111,7 @@ while True:
         # --- detect closed positions ---
         closed = set(last_positions) - set(snapshot)
         for sym in closed:
-            #send_tg(f"✅ Position closed: {sym}")
+            send_tg(f"✅ Position closed: {sym}")
             logger.info(f"Position closed: {sym}")
 
         last_positions = snapshot
@@ -124,3 +125,5 @@ while True:
         logger.error(f"Error: {e}")
         sleep_base = min(60, max(5, int(math.ceil(sleep_base * 1.5))))
         time.sleep(sleep_base)
+
+#-1002926066972
