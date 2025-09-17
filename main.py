@@ -72,6 +72,7 @@ while True:
             # --- fetch TP/SL orders ---
             tp, sl = None, None
             try:
+                logger.info(12345)
                 orders = exchange.fetch_open_orders(sym)
                 for o in orders:
                     logger.info(f"Open order data: {o}")
