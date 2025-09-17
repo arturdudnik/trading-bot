@@ -3,6 +3,19 @@ import time
 import math
 import requests
 import ccxt
+import logging
+import sys
+
+# Configure logger
+logging.basicConfig(
+    level=logging.INFO,  # Levels: DEBUG, INFO, WARNING, ERROR, CRITICAL
+    format="%(asctime)s [%(levelname)s] %(message)s",
+    handlers=[
+        logging.StreamHandler(sys.stdout)  # important for Railway logs
+    ]
+)
+
+logger = logging.getLogger(__name__)
 
 API_KEY = os.getenv("API_KEY")
 API_SECRET = os.getenv("API_SECRET")
@@ -44,6 +57,7 @@ while True:
         positions = exchange.fetch_positions()
         open_now = {}
         for p in positions or []:
+            logger.info(p)
             contracts = safe_float(p.get("contracts"))
             if contracts > 0:
                 sym = p.get("symbol")
@@ -56,7 +70,7 @@ while True:
             side = pos.get("side", "unknown")
             entry = pos.get("entryPrice", "n/a")
             msg = f"{sym}\n{side}\nentry: {entry}"
-            send_tg(msg)
+            #send_tg(msg)
 
         last_symbols = set(open_now)
         time.sleep(sleep_base)
