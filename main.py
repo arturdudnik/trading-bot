@@ -1,4 +1,10 @@
-import os, time, math, requests, ccxt, logging, sys
+import os
+import time
+import math
+import requests
+import ccxt
+import logging
+import sys
 
 # ---------- LOGGER ----------
 logging.basicConfig(
@@ -9,10 +15,10 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # ---------- ENV ----------
-API_KEY   = os.getenv("API_KEY")
-API_SECRET= os.getenv("API_SECRET")
-BOT_TOKEN = os.getenv("BOT_TOKEN")
-CHAT_ID   = os.getenv("CHAT_ID")  # -100... or @public_channel
+API_KEY    = os.getenv("API_KEY")
+API_SECRET = os.getenv("API_SECRET")
+BOT_TOKEN  = os.getenv("BOT_TOKEN")
+CHAT_ID    = os.getenv("CHAT_ID")  # -100... or @public_channel
 
 if not all([API_KEY, API_SECRET, BOT_TOKEN, CHAT_ID]):
     raise RuntimeError("Missing one or more required env vars: API_KEY, API_SECRET, BOT_TOKEN, CHAT_ID")
@@ -22,12 +28,13 @@ exchange = ccxt.mexc({
     "apiKey": API_KEY,
     "secret": API_SECRET,
     "enableRateLimit": True,
-    "options": {"defaultType": "swap"},  # futures
+    "options": {"defaultType": "swap"},  # use futures/swap
 })
 exchange.load_markets()
 
 http = requests.Session()
 
+# ---------- UTILS ----------
 def send_tg(msg: str) -> None:
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
     try:
@@ -37,8 +44,10 @@ def send_tg(msg: str) -> None:
         logger.error(f"Telegram send error: {e}")
 
 def safe_float(v, default=None):
-    try: return float(v)
-    except Exception: return default
+    try:
+        return float(v)
+    except Exception:
+        return default
 
 def almost_equal(a, b, tol=1e-8):
     if a is None or b is None:
@@ -57,26 +66,20 @@ def fetch_tp_sl(symbol: str):
       3) planorder list (standalone triggers)
     Returns (tp, sl) as floats or None.
     """
-    def safe_float(v):
-        try: return float(v)
-        except: return None
-
     tp, sl = None, None
     market = exchange.market(symbol)
     contract_sym = market.get("id", symbol)  # e.g. BTC_USDT
 
     # --- (1) Open orders with attached TP/SL ---
     try:
-        # NOTE: this is the *futures* endpoint (not spot)
         # GET /api/v1/private/order/list/open_orders/{symbol}
-        # It returns stopLossPrice and takeProfitPrice per order.
         res = exchange.contractPrivateGetOrderListOpenOrdersSymbol({
             "symbol": contract_sym,
             "page_num": 1,
             "page_size": 100,
         })
         items = res.get("data", []) if isinstance(res, dict) else res
-        for it in items:
+        for it in items or []:
             tpp = safe_float(it.get("takeProfitPrice"))
             slp = safe_float(it.get("stopLossPrice"))
             if tpp is not None and tp is None:
@@ -98,8 +101,7 @@ def fetch_tp_sl(symbol: str):
             "page_size": 100,
         })
         items = res.get("data", []) if isinstance(res, dict) else res
-        for it in items:
-            # These entries can contain BOTH prices in one row
+        for it in items or []:
             tpp = safe_float(it.get("takeProfitPrice"))
             slp = safe_float(it.get("stopLossPrice"))
             if tpp is not None and tp is None:
@@ -121,7 +123,7 @@ def fetch_tp_sl(symbol: str):
             "page_size": 100,
         })
         items = res.get("data", []) if isinstance(res, dict) else res
-        for it in items:
+        for it in items or []:
             order_type = str(it.get("orderType", "")).upper()
             trig_price = safe_float(it.get("triggerPrice"))
             if trig_price is None:
@@ -137,38 +139,51 @@ def fetch_tp_sl(symbol: str):
 
     return tp, sl
 
-
 # ---------- STATE ----------
 # {symbol: {"side":..., "entry":..., "tp":..., "sl":...}}
 last_positions = {}
 sleep_base = 5
 
+logger.info("Position watcher started.")
+
 # ---------- LOOP ----------
 while True:
     try:
-        positions = exchange.fetch_positions()
+        # Some CCXT setups benefit from passing type hint
+        try:
+            positions = exchange.fetch_positions(params={"type": "swap"})
+        except Exception:
+            positions = exchange.fetch_positions()
+
         snapshot = {}
 
         for p in positions or []:
             contracts = safe_float(p.get("contracts"), 0.0)
-            if contracts <= 0:
+            if contracts is None or contracts <= 0:
                 continue
-            sym   = p.get("symbol")
+
+            sym = p.get("symbol")
             if not sym:
                 continue
-            side  = p.get("side", "unknown")
+
+            side = p.get("side", "unknown")
             entry = p.get("entryPrice", "n/a")
 
-            # First try any TP/SL on the position itself (some ccxt versions expose these)
+            # Try TP/SL on the position object first (varies by ccxt/mexc)
             tp_pos = safe_float(p.get("takeProfitPrice") or p.get("takeProfit") or p.get("tp"))
             sl_pos = safe_float(p.get("stopLossPrice")  or p.get("stopLoss")   or p.get("sl"))
 
-            # Then query raw plan/stop lists (most reliable on MEXC swaps)
             tp, sl = tp_pos, sl_pos
+
+            # If any side is missing, try raw endpoints and only fill the missing one(s)
             if tp is None or sl is None:
-                tp, sl = fetch_tp_sl(sym)
-                tp = tp if tp is not None else t2
-                sl = sl if sl is not None else s2
+                tp2, sl2 = fetch_tp_sl(sym)
+                if tp is None:
+                    tp = tp2
+                if sl is None:
+                    sl = sl2
+
+            logger.debug(f"{sym} side={side} entry={entry} tp={tp} sl={sl}")
 
             current = {"side": side, "entry": entry, "tp": tp, "sl": sl}
             prev = last_positions.get(sym)
@@ -186,7 +201,7 @@ while True:
                 if (prev.get("tp") is None and tp is not None) or \
                    (prev.get("sl") is None and sl is not None) or \
                    tp_changed or sl_changed:
-                    if tp_changed or sl_changed:
+                    if tp_changed or sl_changed or (prev.get("tp") is None and tp is not None) or (prev.get("sl") is None and sl is not None):
                         msg = f"🔄 Update {sym}\n{side}\nentry: {entry}"
                         if tp is not None: msg += f"\nTP: {tp}"
                         if sl is not None: msg += f"\nSL: {sl}"
