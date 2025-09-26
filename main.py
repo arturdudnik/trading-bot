@@ -28,9 +28,27 @@ exchange = ccxt.mexc({
     "apiKey": API_KEY,
     "secret": API_SECRET,
     "enableRateLimit": True,
-    "options": {"defaultType": "swap"},  # use futures/swap
+    "options": {
+        "defaultType": "swap",   # use futures/swap endpoints by default
+        "warnOnFetchCurrencies": False,
+    },
 })
-exchange.load_markets()
+
+# Prevent CCXT from hitting spot-private 'capital/config/getall'
+try:
+    exchange.has["fetchCurrencies"] = False
+except Exception:
+    pass
+
+# Load only swap markets (avoid currencies)
+try:
+    exchange.load_markets(params={"type": "swap"})
+except Exception as e:
+    logger.warning(f"load_markets(params={{'type':'swap'}}) failed: {e} — trying fetch_markets fallback")
+    markets = exchange.fetch_markets(params={"type": "swap"})
+    exchange.markets = exchange.index_by(markets, "symbol")
+    exchange.markets_by_id = exchange.index_by(markets, "id")
+    exchange.symbols = sorted(list(exchange.markets.keys()))
 
 http = requests.Session()
 
@@ -201,11 +219,10 @@ while True:
                 if (prev.get("tp") is None and tp is not None) or \
                    (prev.get("sl") is None and sl is not None) or \
                    tp_changed or sl_changed:
-                    if tp_changed or sl_changed or (prev.get("tp") is None and tp is not None) or (prev.get("sl") is None and sl is not None):
-                        msg = f"🔄 Update {sym}\n{side}\nentry: {entry}"
-                        if tp is not None: msg += f"\nTP: {tp}"
-                        if sl is not None: msg += f"\nSL: {sl}"
-                        send_tg(msg)
+                    msg = f"🔄 Update {sym}\n{side}\nentry: {entry}"
+                    if tp is not None: msg += f"\nTP: {tp}"
+                    if sl is not None: msg += f"\nSL: {sl}"
+                    send_tg(msg)
 
             snapshot[sym] = current
 
